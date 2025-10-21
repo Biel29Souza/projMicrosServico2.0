@@ -1,13 +1,16 @@
 import express from 'express';
 import morgan from 'morgan';
 import fetch from 'node-fetch';
-import { nanoid } from 'nanoid';
+import { PrismaClient } from '@prisma/client'; // prisma
+//import { nanoid } from 'nanoid';
 import { createChannel } from './amqp.js';
 import { ROUTING_KEYS } from '../common/events.js';
 
 const app = express();
 app.use(express.json());
 app.use(morgan('dev'));
+
+const prisma = new PrismaClient(); // prisma
 
 const PORT = process.env.PORT || 3002;
 const USERS_BASE_URL = process.env.USERS_BASE_URL || 'http://localhost:3001';
@@ -20,7 +23,7 @@ const ROUTING_KEY_ORDER_CANCELLED = ROUTING_KEYS.ORDER_CANCELLED || 'order.cance
 
 
 // In-memory "DB"
-const orders = new Map();
+// const orders = new Map();
 // In-memory cache de usuários (preenchido por eventos)
 const userCache = new Map();
 
@@ -54,8 +57,9 @@ let amqp = null;
 
 app.get('/health', (req, res) => res.json({ ok: true, service: 'orders' }));
 
-app.get('/', (req, res) => {
-  res.json(Array.from(orders.values()));
+app.get('/', async (req, res) => {  // prisma
+  const orders = await prisma.order.findMany(); // prisma
+  res.json(orders); // prisma
 });
 
 async function fetchWithTimeout(url, ms) {
@@ -87,9 +91,11 @@ app.post('/', async (req, res) => {
     }
   }
 
-  const id = `o_${nanoid(6)}`;
-  const order = { id, userId, items, total, status: 'created', createdAt: new Date().toISOString() };
-  orders.set(id, order);
+  // const id = `o_${nanoid(6)}`;
+  // const order = { id, userId, items, total, status: 'created', createdAt: new Date().toISOString() };
+  // orders.set(id, order);
+  const order = await prisma.order.create({ data: { userId, items, total, status: 'created' } }); // prisma
+
 
   // (Opcional) publicar evento order.created
   try {
@@ -105,30 +111,51 @@ app.post('/', async (req, res) => {
 });
 
 // implementacao do order.cancelled
-app.delete('/:id', async (req, res) => { // o-cancel
-  const { id } = req.params; // o-cancel
+// app.delete('/:id', async (req, res) => { // o-cancel
+//   const { id } = req.params; // o-cancel
 
-  if (!orders.has(id)) { // o-cancel
-    return res.status(404).json({ error: 'Pedido não encontrado' }); // o-cancel
-  } // o-cancel
+//   if (!orders.has(id)) { // o-cancel
+//     return res.status(404).json({ error: 'Pedido não encontrado' }); // o-cancel
+//   } // o-cancel
 
-  const order = orders.get(id); // o-cancel
-  order.status = 'cancelled'; // o-cancel
-  order.cancelledAt = new Date().toISOString(); // o-cancel
-  orders.set(id, order); // o-cancel
+//   const order = orders.get(id); // o-cancel
+//   order.status = 'cancelled'; // o-cancel
+//   order.cancelledAt = new Date().toISOString(); // o-cancel
+//   orders.set(id, order); // o-cancel
 
-  try { // o-cancel
-    if (amqp?.ch) { // o-cancel
-      amqp.ch.publish(EXCHANGE, ROUTING_KEY_ORDER_CANCELLED, Buffer.from(JSON.stringify({ orderId: id })), { persistent: true }); // o-cancel
-      console.log('[orders] published event:', ROUTING_KEY_ORDER_CANCELLED, id); // o-cancel
-    } // o-cancel
-  } catch (err) { // o-cancel
-    console.error('[orders] publish cancel error:', err.message); // o-cancel
-  } // o-cancel
+//   try { // o-cancel
+//     if (amqp?.ch) { // o-cancel
+//       amqp.ch.publish(EXCHANGE, ROUTING_KEY_ORDER_CANCELLED, Buffer.from(JSON.stringify({ orderId: id })), { persistent: true }); // o-cancel
+//       console.log('[orders] published event:', ROUTING_KEY_ORDER_CANCELLED, id); // o-cancel
+//     } // o-cancel
+//   } catch (err) { // o-cancel
+//     console.error('[orders] publish cancel error:', err.message); // o-cancel
+//   } // o-cancel
 
-  res.status(200).json({ message: 'Pedido cancelado com sucesso', order }); // o-cancel
-}); // o-cancel
+//   res.status(200).json({ message: 'Pedido cancelado com sucesso', order }); // o-cancel
+// }); // o-cancel
 
+app.delete('/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const order = await prisma.order.update({ where: { id }, data: { status: 'cancelled', cancelledAt: new Date() } }); // prisma
+
+    // const order = orders.get(id); // removido-prisma
+    // order.status = 'cancelled'; // removido-prisma
+    // order.cancelledAt = new Date().toISOString(); // removido-prisma
+    // orders.set(id, order); // removido-prisma
+
+    if (amqp?.ch) {
+      amqp.ch.publish(EXCHANGE, ROUTING_KEY_ORDER_CANCELLED, Buffer.from(JSON.stringify({ orderId: id })), { persistent: true });
+      console.log('[orders] published event:', ROUTING_KEY_ORDER_CANCELLED, id);
+    }
+
+    res.status(200).json({ message: 'Pedido cancelado com sucesso', order });
+  } catch (err) {
+    res.status(404).json({ error: 'Pedido não encontrado' });
+  }
+});
 
 
 app.listen(PORT, () => {
